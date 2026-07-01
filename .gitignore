@@ -1,0 +1,5 @@
+# Resultados y ficheros generados (no se versionan)
+benchmark_ultima_ejecucion.log
+*.log
+*.xlsx
+~$*.xlsx
