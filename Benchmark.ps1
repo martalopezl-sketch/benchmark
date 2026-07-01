@@ -328,11 +328,13 @@ $registros = New-Object System.Collections.ArrayList
 
 try {
     $lista   = Invoke-CnmcApi "$BaseUrl/ofertas/electricidad?$(ConvertTo-QueryString (Get-FullParams 0))"
-    # NO filtrar por precioUnico aqui: hay empresas presentes cuya mejor oferta no esta
-    # marcada como precio unico (p.ej. Octopus, Nexus) y se perderian. Se filtra por empresa.
-    $ofertas = @($lista.resultadoComparador)
+    # SOLO ofertas de PRECIO FIJO: tipoElectricidad='TE'. Se descartan las indexadas
+    # ('FFF', p.ej. Repsol "Tarifa 10 horas") y la regulada PVPC. Esto garantiza que
+    # los precios provienen siempre de ofertas "Precio fijo" del comparador CNMC.
+    $todas   = @($lista.resultadoComparador)
+    $ofertas = @($todas | Where-Object { $_.tipoElectricidad -eq 'TE' })
     $nUnicas = @($ofertas | Where-Object { $_.tienePrecioUnico -eq 'S' }).Count
-    Write-Host "  $($ofertas.Count) ofertas encontradas ($nUnicas de precio unico)"
+    Write-Host "  $($todas.Count) ofertas ($($ofertas.Count) de precio fijo, $nUnicas de ellas precio unico)"
     Write-Host ""
 } catch {
     Write-Host "  ERROR al consultar el API: $($_.Exception.Message)"
