@@ -23,9 +23,9 @@ $UA      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 # 25 empresas del API: NOMBRE_LEGAL -> @{ brand=marca; search=cadena de oferta }
 $TargetOffers = [ordered]@{
     'ENERGYA VM'         = @{ brand='Energya VM';      search='Formula Fija Unica' }
-    'DOMESTICA GAS'      = @{ brand='Visalia';         search='Visalia Luz Fijo' }
+    'DOMESTICA GAS'      = @{ brand='Visalia';         search='Fijo 24'; exclude='empieza|plan ahorro|3 precios' }
     'NATURGY'            = @{ brand='Naturgy';         search='Por Uso Luz' }
-    'REPSOL'             = @{ brand='Repsol';          search='Tarifa Ahorro Potencia' }
+    'REPSOL'             = @{ brand='Repsol';          search='Sin Horarios'; exclude='mantenimiento|pyme|renovable|discrimina|veh' }
     'OCTOPUS'            = @{ brand='Octopus';         search='OCTOPUS RELAX' }
     'NIBA'               = @{ brand='Niba';            search='niba Zen' }
     'ENERGIA NUFRI'      = @{ brand='Energia Nufri';   search='CALMA' }
@@ -210,8 +210,11 @@ function Parse-Prices {
 function Get-WebText {
     param([string]$Url)
     try {
-        $resp = Invoke-WebRequest -Uri $Url -Headers @{ 'User-Agent' = $UA } -TimeoutSec 15 -UseBasicParsing
-        return [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+        $resp = Invoke-WebRequest -Uri $Url -Headers @{ 'User-Agent' = $UA } -TimeoutSec 20 -UseBasicParsing
+        $raw = [System.Text.Encoding]::UTF8.GetString($resp.RawContentStream.ToArray())
+        # Decodifica entidades HTML (&euro;->EUR simbolo, &iacute;->i, etc.) para que los
+        # patrones funcionen en webs que escriben '&euro;/kWh' en vez de 'EUR/kWh'.
+        return [System.Net.WebUtility]::HtmlDecode($raw)
     } catch { return $null }
 }
 
@@ -259,8 +262,8 @@ function Get-Factor {
 }
 
 function Get-Iberdrola {
-    # Plan Estable (precio fijo). Energia 24h + Potencia Punta/Valle (EUR/kW dia -> x365).
-    $text = Get-WebText 'https://www.iberdrola.es/luz/plan-estable'
+    # Plan Online (precio fijo). Energia 24h + Potencia Punta/Valle (EUR/kW dia -> x365).
+    $text = Get-WebText 'https://www.iberdrola.es/luz/plan-online'
     if (-not $text) { return @{ energia=$null; p1=$null; p2=$null } }
     $t = ($text -replace '<[^>]+>', ' ') -replace '\s+', ' '
     $mE  = [regex]::Match($t, '24\s*horas\s*del\s*d.a\s*([0-9][.,][0-9]{3,6})\s*[^0-9]{0,4}kWh', 'IgnoreCase')
@@ -270,6 +273,88 @@ function Get-Iberdrola {
         $e  = Get-Number $mE.Groups[1].Value
         $p1 = [Math]::Round((Get-Number $mP1.Groups[1].Value) * 365, 2)
         $p2 = [Math]::Round((Get-Number $mP2.Groups[1].Value) * 365, 2)
+        if ($e -ge 0.05 -and $e -le 0.30) { return @{ energia=$e; p1=$p1; p2=$p2 } }
+    }
+    return @{ energia=$null; p1=$null; p2=$null }
+}
+
+function Get-TotalEnergies {
+    # "A tu aire siempre" (precio fijo). Precios SIN impuestos. Potencia en EUR/kW dia -> x365.
+    $text = Get-WebText 'https://www.totalenergies.es/es/hogares/tarifas-luz/a-tu-aire-siempre'
+    if (-not $text) { return @{ energia=$null; p1=$null; p2=$null } }
+    $t = ($text -replace '<[^>]+>', ' ') -replace '\s+', ' '
+    $mE  = [regex]::Match($t, 'precio\s+fijo\s+a\s*([0-9][.,][0-9]{2,6})\s*[^0-9]{0,5}kWh', 'IgnoreCase')
+    $mP1 = [regex]::Match($t, 'Potencia\s*P1\s*([0-9][.,][0-9]{3,6})\s*[^0-9]{0,5}kW', 'IgnoreCase')
+    $mP2 = [regex]::Match($t, '\bP2\s*([0-9][.,][0-9]{3,6})\s*[^0-9]{0,5}kW', 'IgnoreCase')
+    if ($mE.Success -and $mP1.Success) {
+        $e  = Get-Number $mE.Groups[1].Value
+        $p1 = [Math]::Round((Get-Number $mP1.Groups[1].Value) * 365, 2)
+        $p2 = if ($mP2.Success) { [Math]::Round((Get-Number $mP2.Groups[1].Value) * 365, 2) } else { $p1 }
+        if ($e -ge 0.05 -and $e -le 0.30) { return @{ energia=$e; p1=$p1; p2=$p2 } }
+    }
+    return @{ energia=$null; p1=$null; p2=$null }
+}
+
+function Get-Plenitude {
+    # Tarifa "Facil" (precio fijo). "Precio especial: X EUR/kWh" (sin impuestos) +
+    # tabla potencia "Sin impuestos P1 P2" en EUR/kW dia -> x365.
+    $text = Get-WebText 'https://eniplenitude.es/hogar/tarifas-luz/facil/'
+    if (-not $text) { return @{ energia=$null; p1=$null; p2=$null } }
+    $t = ($text -replace '<[^>]+>', ' ') -replace '\s+', ' '
+    $mE = [regex]::Match($t, 'Precio\s+especial:\s*([0-9][.,][0-9]{2,6})\s*[^0-9]{0,5}kWh', 'IgnoreCase')
+    $mP = [regex]::Match($t, 'POTENCIA.{0,80}?Sin\s+impuestos\s*([0-9][.,][0-9]{3,6})\s+([0-9][.,][0-9]{3,6})', 'IgnoreCase')
+    if ($mE.Success -and $mP.Success) {
+        $e  = Get-Number $mE.Groups[1].Value
+        $p1 = [Math]::Round((Get-Number $mP.Groups[1].Value) * 365, 2)
+        $p2 = [Math]::Round((Get-Number $mP.Groups[2].Value) * 365, 2)
+        if ($e -ge 0.05 -and $e -le 0.30) { return @{ energia=$e; p1=$p1; p2=$p2 } }
+    }
+    return @{ energia=$null; p1=$null; p2=$null }
+}
+
+function Get-Octopus {
+    # "Octopus Relax" (mismo precio 24h, fijo 12 meses). "0,115 EUR/kWh 10% dto ...
+    # Potencia Punta (P1) 0,093 EUR/kW/dia Valle (P2) 0,093". Potencia EUR/kW dia -> x365.
+    $text = Get-WebText 'https://octopusenergy.es/precios'
+    if (-not $text) { return @{ energia=$null; p1=$null; p2=$null } }
+    $t = ($text -replace '<[^>]+>', ' ') -replace '\s+', ' '
+    $m = [regex]::Match($t, '([0-9][.,][0-9]{2,6})\s*[^0-9]{0,5}kWh\s*10%\s*dto.{0,80}?Potencia\s*Punta\s*\(P1\)\s*([0-9][.,][0-9]{2,6}).{0,40}?Valle\s*\(P2\)\s*([0-9][.,][0-9]{2,6})', 'IgnoreCase')
+    if ($m.Success) {
+        $e  = Get-Number $m.Groups[1].Value
+        $p1 = [Math]::Round((Get-Number $m.Groups[2].Value) * 365, 2)
+        $p2 = [Math]::Round((Get-Number $m.Groups[3].Value) * 365, 2)
+        if ($e -ge 0.05 -and $e -le 0.30) { return @{ energia=$e; p1=$p1; p2=$p2 } }
+    }
+    return @{ energia=$null; p1=$null; p2=$null }
+}
+
+function Get-Clarity {
+    # Tarifa "24 Horas" (precio fijo). "Precio Energia 24 Horas : X EUR/kWh" +
+    # primer "Precios Potencia P1 : Y EUR/kW/dia" -> x365.
+    $text = Get-WebText 'https://www.clarityenergy.es/tarifas-luz/'
+    if (-not $text) { return @{ energia=$null; p1=$null; p2=$null } }
+    $t = ($text -replace '<[^>]+>', ' ') -replace '\s+', ' '
+    $mE = [regex]::Match($t, 'Precio\s+Energ.a\s+24\s+Horas\s*:\s*([0-9][.,][0-9]{2,6})', 'IgnoreCase')
+    $mP = [regex]::Match($t, 'Precios?\s+Potencia\s+P1\s*:\s*([0-9][.,][0-9]{2,6})\s*[^0-9]{0,6}kW.{0,25}?P2\s*:\s*([0-9][.,][0-9]{2,6})', 'IgnoreCase')
+    if ($mE.Success -and $mP.Success) {
+        $e  = Get-Number $mE.Groups[1].Value
+        $p1 = [Math]::Round((Get-Number $mP.Groups[1].Value) * 365, 2)
+        $p2 = [Math]::Round((Get-Number $mP.Groups[2].Value) * 365, 2)
+        if ($e -ge 0.05 -and $e -le 0.30) { return @{ energia=$e; p1=$p1; p2=$p2 } }
+    }
+    return @{ energia=$null; p1=$null; p2=$null }
+}
+
+function Get-Nexus {
+    # Tarifa plana (fija): PUNTA=LLANO=VALLE en energia (backref \1). Potencia EUR/kW MES -> x12.
+    $text = Get-WebText 'https://www.nexusenergia.com/hogar/tarifas-luz/'
+    if (-not $text) { return @{ energia=$null; p1=$null; p2=$null } }
+    $t = ($text -replace '<[^>]+>', ' ') -replace '\s+', ' '
+    $m = [regex]::Match($t, 'Precio\s+energ.a\s+PUNTA\s+([0-9][.,][0-9]{2,6}).{0,80}?LLANO\s+\1.{0,80}?VALLE\s+\1.{0,140}?Precio\s+potencia\s+PUNTA\s+([0-9][.,][0-9]{2,6}).{0,90}?VALLE\s+([0-9][.,][0-9]{2,6})', 'IgnoreCase')
+    if ($m.Success) {
+        $e  = Get-Number $m.Groups[1].Value
+        $p1 = [Math]::Round((Get-Number $m.Groups[2].Value) * 12, 2)   # EUR/kW mes -> ano
+        $p2 = [Math]::Round((Get-Number $m.Groups[3].Value) * 12, 2)
         if ($e -ge 0.05 -and $e -le 0.30) { return @{ energia=$e; p1=$p1; p2=$p2 } }
     }
     return @{ energia=$null; p1=$null; p2=$null }
@@ -341,15 +426,25 @@ try {
     $ofertas = @()
 }
 
-# Emparejar cada marca con su oferta (nombre legal + cadena de busqueda)
+# Empresas que se toman SIEMPRE de su web (su oferta del CNMC no es la tarifa fija correcta)
+$ForzarWeb = @('Octopus', 'Clarity Energy', 'Nexus', 'Iberdrola')
+
+# Emparejar cada marca con su oferta de PRECIO FIJO (nombre legal + cadena de busqueda)
 foreach ($legal in $TargetOffers.Keys) {
     $cfg    = $TargetOffers[$legal]
     $marca  = $cfg.brand
     $search = $cfg.search
 
-    $candidatas = @($ofertas | Where-Object { $_.comercializadora.ToUpper().Contains($legal.ToUpper()) })
-
     $registro = [ordered]@{ Empresa=$marca; Energia=$null; P1=$null; P2=$null; Fuente=$null }
+
+    if ($ForzarWeb -contains $marca) {
+        Write-Host ("  ->   {0,-22} (se tomara de su web)" -f $marca)
+        [void]$registros.Add($registro); continue
+    }
+
+    $candidatas = @($ofertas | Where-Object { $_.comercializadora.ToUpper().Contains($legal.ToUpper()) })
+    # Excluir ofertas que no son la tarifa fija estandar (promos, mantenimiento, etc.)
+    if ($cfg.exclude) { $candidatas = @($candidatas | Where-Object { $_.oferta.ToLower() -notmatch $cfg.exclude }) }
 
     if ($candidatas.Count -gt 0) {
         # Prioridad: (1) precio unico + cadena de busqueda, (2) precio unico,
@@ -364,6 +459,13 @@ foreach ($legal in $TargetOffers.Keys) {
             $det  = Invoke-CnmcApi "$BaseUrl/oferta?$(ConvertTo-QueryString (Get-FullParams $oferta.id))"
             $txt  = [string]$det.caracteristicas.caracteristicas
             $pr   = Parse-Prices $txt
+
+            # Endesa: usar el precio de energia CON descuento (no el general)
+            if ($marca -eq 'Endesa') {
+                $mcd = [regex]::Match($txt, 'con\s+\d+\s*%\s*descuento.{0,45}?([0-9][.,][0-9]{3,6})', 'IgnoreCase')
+                if ($mcd.Success) { $pr.energia = Get-Number $mcd.Groups[1].Value }
+            }
+
             $registro.Energia = $pr.energia
             $registro.P1      = $pr.p1
             $registro.P2      = $pr.p2
@@ -378,7 +480,7 @@ foreach ($legal in $TargetOffers.Keys) {
             Write-Host ("  ERR  {0,-22} {1}" -f $marca, $_.Exception.Message)
         }
     } else {
-        Write-Host ("  --   {0,-22} (no encontrada en API)" -f $marca)
+        Write-Host ("  --   {0,-22} (no en CNMC como precio fijo)" -f $marca)
     }
 
     [void]$registros.Add($registro)
@@ -395,6 +497,11 @@ $scrapers = [ordered]@{
     'Podo'           = ${function:Get-Podo}
     'Factor Energia' = ${function:Get-Factor}
     'Iberdrola'      = ${function:Get-Iberdrola}
+    'Total Energies' = ${function:Get-TotalEnergies}
+    'Plenitude'      = ${function:Get-Plenitude}
+    'Octopus'        = ${function:Get-Octopus}
+    'Clarity Energy' = ${function:Get-Clarity}
+    'Nexus'          = ${function:Get-Nexus}
 }
 foreach ($emp in $scrapers.Keys) {
     $reg = $registros | Where-Object { $_.Empresa -eq $emp } | Select-Object -First 1
@@ -417,6 +524,32 @@ foreach ($emp in $scrapers.Keys) {
         Write-Host ("  OK   {0,-22} E:{1:N4} | P1:{2:N2} | P2:{3:N2}" -f $emp, $pr.energia, $pr.p1, $pr.p2)
     } else {
         Write-Host ("  WARN {0,-22} (no extraido de web)" -f $emp)
+    }
+}
+
+# --- Fichas web (empresas cuyo precio se carga por JavaScript y no se puede leer por codigo) ---
+# Valores tomados a mano de su web (precios_manuales.csv). Solo rellenan lo que falta.
+Write-Host ""
+Write-Host "Fichas web (precio cargado por JS, valor guardado a mano)..."
+Write-Host ""
+$manualPath = Join-Path $PSScriptRoot 'precios_manuales.csv'
+if (Test-Path $manualPath) {
+    $manuales = @{}
+    foreach ($m in (Import-Csv $manualPath)) { $manuales[(Normalize-Name $m.Empresa)] = $m }
+    foreach ($reg in $registros) {
+        if ($reg.Energia -eq $null) {
+            $k = Normalize-Name $reg.Empresa
+            if ($manuales.ContainsKey($k)) {
+                $mm = $manuales[$k]
+                $reg.Energia = Get-Number $mm.Energia
+                $reg.P1      = Get-Number $mm.P1
+                $reg.P2      = Get-Number $mm.P2
+                if ($reg.Energia -ne $null) {
+                    $reg.Fuente = 'Web (ficha)'
+                    Write-Host ("  OK   {0,-22} E:{1:N4} | P1:{2:N2} | P2:{3:N2}  (ficha web)" -f $reg.Empresa, $reg.Energia, $reg.P1, $reg.P2)
+                }
+            }
+        }
     }
 }
 
@@ -452,7 +585,7 @@ try {
         $hojasDefecto = @($wb.Worksheets | ForEach-Object { $_.Name })   # p.ej. "Hoja1"
     }
 
-    # --- Leer la semana anterior mas reciente (para arrastre y comparativa) ---
+    # --- Leer la semana anterior mas reciente (SOLO para la comparativa; ya no se arrastra) ---
     $semanasPrev = @($wb.Worksheets | Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' -and $_.Name -ne $pestSemana } |
                      Sort-Object { $_.Name } -Descending)
     $datosAnt  = @{}
@@ -473,23 +606,7 @@ try {
         }
     }
 
-    # --- Arrastre: empresas sin dato esta semana heredan el ultimo valor conocido ---
-    if ($wsAntName) {
-        foreach ($reg in $registros) {
-            $clave = Normalize-Name $reg.Empresa
-            if ($reg.Energia -eq $null -and $datosAnt.ContainsKey($clave)) {
-                $ant = $datosAnt[$clave]
-                if ($ant.energia -ne $null) {
-                    $reg.Energia = $ant.energia
-                    $reg.P1      = $ant.p1
-                    $reg.P2      = $ant.p2
-                    $reg.Fuente  = "Arrastrado ($wsAntName)"
-                }
-            }
-        }
-        $nArr = @($registros | Where-Object { "$($_.Fuente)" -like 'Arrastrado*' }).Count
-        if ($nArr -gt 0) { Write-Host "  $nArr empresa(s) sin dato esta semana: arrastrado ultimo valor de '$wsAntName'" }
-    }
+    # (Sin arrastre: si una empresa no esta en CNMC ni se pudo leer su web, queda 'No disponible'.)
 
     # --- Crear pestana semanal al principio (con nombre temporal) ---
     # Se crea ANTES de borrar la homonima previa para no dejar el libro sin hojas

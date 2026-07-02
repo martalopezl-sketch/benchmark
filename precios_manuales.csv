@@ -1,0 +1,5 @@
+Empresa,Energia,P1,P2,Nota
+Gana Energia,0.119,32.49,32.49,Tarifa 24 horas (web; precio via JS, actualizar a mano)
+Energy Asset,0.0990,27.70,23.32,Precio energia con dto 3 meses; Punta/Valle x365 (web via JS)
+Fenie Energia,0.128654,45.02,12.08,Fijo Energetico 1P 2.0TD (web via JS)
+Disa Energia,0.154946,36.36,28.93,Tranquilidad web - disagrupo.es (web via JS)
