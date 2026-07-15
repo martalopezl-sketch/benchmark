@@ -428,6 +428,25 @@ function Get-Gana {
     return @{ energia=$null; p1=$null; p2=$null }
 }
 
+function Get-EnergyAsset {
+    # SPA: los precios estan en el bundle JS (/assets/index-*.js). Se lee el objeto
+    # "Tarifa Plana.Lanzamiento": energyPrices:[X] powerPrices:[Y,Z] (EUR/kW dia -> x365).
+    $html = Get-WebText 'https://energyasset.es/tarifa'
+    if (-not $html) { return @{ energia=$null; p1=$null; p2=$null } }
+    $mjs = [regex]::Match($html, 'src="(/assets/index-[^"]+\.js)"')
+    if (-not $mjs.Success) { return @{ energia=$null; p1=$null; p2=$null } }
+    $js = Get-WebText ('https://energyasset.es' + $mjs.Groups[1].Value)
+    if (-not $js) { return @{ energia=$null; p1=$null; p2=$null } }
+    $m = [regex]::Match($js, 'Tarifa Plana\.Lanzamiento[\s\S]{0,300}?energyPrices:\[([0-9\.]+)\][\s\S]{0,60}?powerPrices:\[([0-9\.]+),\s*([0-9\.]+)\]')
+    if ($m.Success) {
+        $e  = Get-Number $m.Groups[1].Value
+        $p1 = [Math]::Round((Get-Number $m.Groups[2].Value) * 365, 2)
+        $p2 = [Math]::Round((Get-Number $m.Groups[3].Value) * 365, 2)
+        if ($e -ge 0.05 -and $e -le 0.30) { return @{ energia=$e; p1=$p1; p2=$p2 } }
+    }
+    return @{ energia=$null; p1=$null; p2=$null }
+}
+
 # --------------------------------------------------------- EXCEL HELPERS -------
 
 function Format-Sheet {
@@ -496,7 +515,7 @@ try {
 
 # Empresas que se toman SIEMPRE de su web (su oferta del CNMC no es la tarifa fija correcta,
 # o no aparecen en el CNMC). Se leen de su web cada vez (sin valores manuales).
-$ForzarWeb = @('Octopus', 'Nexus', 'Iberdrola', 'El Corte Ingles', 'Fenie Energia', 'Disa Energia', 'Gana Energia')
+$ForzarWeb = @('Octopus', 'Nexus', 'Iberdrola', 'El Corte Ingles', 'Fenie Energia', 'Disa Energia', 'Gana Energia', 'Energy Asset')
 
 # Emparejar cada marca con su oferta de PRECIO FIJO (nombre legal + cadena de busqueda)
 foreach ($legal in $TargetOffers.Keys) {
@@ -580,6 +599,7 @@ $scrapers = [ordered]@{
     'Fenie Energia'  = ${function:Get-Fenie}
     'Disa Energia'   = ${function:Get-Disa}
     'Gana Energia'   = ${function:Get-Gana}
+    'Energy Asset'   = ${function:Get-EnergyAsset}
 }
 foreach ($emp in $scrapers.Keys) {
     $reg = $registros | Where-Object { $_.Empresa -eq $emp } | Select-Object -First 1
