@@ -3,3 +3,15 @@ benchmark_ultima_ejecucion.log
 *.log
 *.xlsx
 ~$*.xlsx
+
+# Python portable (instalación local)
+python-portable/
+.pyportable/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Archivos temporales de pruebas
+_chk*.py
