@@ -113,7 +113,7 @@ eops_mes as (
             NULL AS fecha_ultimo_cambio_tarifa,  -- No disponible en esta rama del UNION
             COUNTIF(t.data_baixa IS NULL) as total_eops,
             'Energía colectiva' AS fuente,
-            t.data_alta as activation_date
+            DATE_TRUNC(t.data_alta, MONTH) as activation_date
         FROM tarifa_llamada t
         GROUP BY ALL
     ) result
@@ -131,18 +131,21 @@ eops_cec_table as (
         eop.tenant_code,
         eop.fecha_ultimo_cambio_tarifa,
         'EOP' as kpi_type,
+        -- Mes en curso: el ajuste de altas/bajas pendientes (nivel tarifa) se reparte por peso entre las filas
         CASE
             WHEN DATE_TRUNC(eop.mes, MONTH) = DATE_TRUNC(CURRENT_DATE(), MONTH)
-            THEN eop.eops + IFNULL(altas_ayer.contracts, 0) - IFNULL(bajas_ayer.contracts, 0)
+            THEN eop.eops + (IFNULL(altas_ayer.contracts, 0) - IFNULL(bajas_ayer.contracts, 0)) * eop.peso_acceso
             ELSE eop.eops
         END as eops_brutos,
-        SAFE_DIVIDE(eop.eops, SUM(eop.eops) OVER(PARTITION BY eop.mes, eop.current_lucera_tariff_name, eop.tenant_code, eop.activation_date)) as peso_acceso,
+        eop.peso_acceso,
         altas.contracts as total_contracts_activated,
         bajas.contracts as total_contracts_churned,
         altas.clientes_efecto_consumo as total_altas_cec,
         bajas.clientes_efecto_consumo as total_bajas_cec
     FROM (
-        SELECT mes, activation_date, effective_dealer, tarifa_acceso, current_lucera_tariff_name, tenant_code, fecha_ultimo_cambio_tarifa, EOPs as eops
+        SELECT mes, activation_date, effective_dealer, tarifa_acceso, current_lucera_tariff_name, tenant_code, fecha_ultimo_cambio_tarifa, EOPs as eops,
+            -- Las altas/bajas vienen a nivel tarifa-mes-marca: el peso debe sumar 1 en ese nivel (sin activation_date)
+            SAFE_DIVIDE(EOPs, SUM(EOPs) OVER(PARTITION BY mes, current_lucera_tariff_name, tenant_code)) as peso_acceso
         FROM eops_mes
     ) eop
     LEFT JOIN (SELECT tenant_code, tarifa, date(year,month,1) as yearmonth, sum(clientes_efecto_consumo) as clientes_efecto_consumo, sum(contracts) as contracts FROM clientes_efecto_consumo_table where kpi_type = 'Altas' group by 1,2,3) altas
