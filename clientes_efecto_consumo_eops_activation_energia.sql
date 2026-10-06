@@ -18,6 +18,7 @@ tarifa_llamada AS (
     s.signup_id,
     s.terminal_contract_id AS polissa_id,
     s.energy_effective_dealer AS effective_dealer,
+    s.energy_discount_code AS affiliate_code,
     DATE(s.registered_activation_date) AS data_alta,
     DATE(s.registered_deactivation_date) AS data_baixa,
     IF(s.change_type = 'change', DATE(s.registered_activation_date), NULL) AS fecha_ultimo_cambio_tarifa,
@@ -39,6 +40,7 @@ base_calculo AS (
       nombre_tarifa AS llista_preu,
       DATE_TRUNC(data_alta, MONTH) AS activation_date,
       effective_dealer,
+      affiliate_code,
       fecha_ultimo_cambio_tarifa,
       COUNT(*) AS EOPs
     FROM tarifa_llamada
@@ -55,6 +57,7 @@ eops_proporcional AS (
       CAST(CONCAT(SUBSTRING(yearmonth,1,4),'-',SUBSTRING(yearmonth,5,2), '-01') AS date) AS mes,
       activation_date,
       effective_dealer,
+      affiliate_code,
       llista_preu AS tarifa,
       company_name AS tenant_code,
       fecha_ultimo_cambio_tarifa,
@@ -68,6 +71,22 @@ eops_cec_table AS (
       EXTRACT(YEAR FROM eop.mes) AS year,
       eop.activation_date,
       eop.effective_dealer,
+      eop.affiliate_code,
+      CASE
+        WHEN STARTS_WITH(eop.affiliate_code, 'batman-30') THEN 'BATMAN 30€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'batman-50') THEN 'BATMAN 50€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'batman-40') THEN 'BATMAN 40€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'masmovil-bat-60') THEN 'BATMAN 60€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'energygo-bat-60') THEN 'BATMAN 60€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'descuento-captacion-30') THEN 'DTO CAPTA 30€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'descuento-captacion-50') THEN 'DTO CAPTA 50€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'energygo-bienvenida-30') THEN 'DTO CAPTA 30€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'masmovil-bienvenida-30') THEN 'DTO CAPTA 30€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'requete') THEN 'DTO CAPTA 30€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'masmovil-vuelta-al-cole') THEN 'DTO CAPTA 50€'
+        WHEN STARTS_WITH(eop.affiliate_code, 'energygo-vuelta-al-cole') THEN 'DTO CAPTA 50€'
+        ELSE NULL
+      END AS descuento_capta,
       EXTRACT(MONTH FROM eop.mes) AS month,
       eop.tarifa,
       eop.tenant_code,
